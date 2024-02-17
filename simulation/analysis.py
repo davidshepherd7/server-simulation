@@ -1,3 +1,4 @@
+from __future__ import annotations
 import enum
 import sys
 import heapq
@@ -62,7 +63,7 @@ def plot_rates(stats: Stats) -> Any:
                 if r.when_timed_out is not None
             ]
         ),
-        label="Timeouts",
+        label="Worker timeouts",
     )
     fig.suptitle("Event rates")
     fig.legend()

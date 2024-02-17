@@ -23,14 +23,14 @@ class Stats:
         self.history: list[StatSnapshot] = [StatSnapshot(t_start, 0, 0, 0, 0)]
         self.all_requests: list[Request] = []
 
-    def snapshot(self, t: float, backend: Any) -> None:
+    def snapshot(self, t: float, backend: "Backend") -> None:
         self.history.append(
             StatSnapshot(
                 t,
                 len(backend.queue),
                 len(backend.processing),
                 len(backend.completed),
-                len(backend.timed_out),
+                len(backend.worker_timed_out),
             )
         )
 
@@ -51,15 +51,15 @@ class Event:
 
 
 class Backend:
-    def __init__(self, stats: Stats, parallelism: int, timeout: float) -> None:
+    def __init__(self, stats: Stats, parallelism: int, worker_timeout: float) -> None:
         self.queue: list[Request] = []
         self.processing: set[Request] = set()
         self.completed: set[Request] = set()
-        self.timed_out: set[Request] = set()
+        self.worker_timed_out: set[Request] = set()
 
         self.stats = stats
         self.parallelism = parallelism
-        self.timeout = timeout
+        self.worker_timeout = worker_timeout
 
     def append_request(self, t: float, r: Request) -> list[Event]:
         self.queue.append(r)
@@ -82,7 +82,7 @@ class Backend:
         self.processing.add(r)
         self.stats.snapshot(t, self)
         return [
-            Event(t + self.timeout, lambda t: self.maybe_timeout(t, r)),
+            Event(t + self.worker_timeout, lambda t: self.maybe_timeout(t, r)),
             Event(
                 t + r.processing_time,
                 lambda t: self.complete_process(t, r),
@@ -95,13 +95,13 @@ class Backend:
             return []
 
         self.processing.remove(r)
-        self.timed_out.add(r)
+        self.worker_timed_out.add(r)
         r.when_timed_out = t
         self.stats.snapshot(t, self)
         return self.try_start_process_request(t)
 
     def complete_process(self, t: float, r: Request) -> list[Event]:
-        # Already completed
+        # Already timed out or completed
         if r not in self.processing:
             return []
 
@@ -139,7 +139,7 @@ class Client:
 def sim_loop(max_t: float) -> Stats:
     t = 0.0
     stats = Stats(t_start=t)
-    backend = Backend(stats, parallelism=20, timeout=10.0)
+    backend = Backend(stats, parallelism=20, worker_timeout=10.0)
     client = Client(
         backend,
         stats,

@@ -21,14 +21,34 @@ import scipy.stats
 class Request:
     processing_time: float
     when_sent: float
-    when_completed: float | None = None
-    when_timed_out: float | None = None
+    _when_completed: float | None = None
+    _when_timed_out: float | None = None
 
     id: str = dataclasses.field(
         default_factory=lambda: "".join(
             random.choice(string.ascii_uppercase + string.digits) for i in range(10)
         )
     )
+
+    @property
+    def when_completed(self) -> float | None:
+        return self._when_completed
+
+    @when_completed.setter
+    def when_completed(self, val: float) -> None:
+        assert not self._when_timed_out
+        assert val > self.when_sent
+        self._when_completed = val
+
+    @property
+    def when_timed_out(self) -> float | None:
+        return self._when_timed_out
+
+    @when_timed_out.setter
+    def when_timed_out(self, val: float) -> None:
+        assert not self._when_completed
+        assert val > self.when_sent
+        self._when_timed_out = val
 
     def __hash__(self) -> int:
         return hash(self.id)
