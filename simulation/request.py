@@ -20,6 +20,7 @@ import scipy.stats
 @dataclass
 class Request:
     processing_time: float
+    database_time: float | None
     when_sent: float
     _when_completed: float | None = None
     _when_timed_out: float | None = None
@@ -37,7 +38,7 @@ class Request:
     @when_completed.setter
     def when_completed(self, val: float) -> None:
         assert not self._when_timed_out
-        assert val > self.when_sent
+        assert val >= self.when_sent
         self._when_completed = val
 
     @property
@@ -47,7 +48,7 @@ class Request:
     @when_timed_out.setter
     def when_timed_out(self, val: float) -> None:
         assert not self._when_completed
-        assert val > self.when_sent
+        assert val >= self.when_sent
         self._when_timed_out = val
 
     def __hash__(self) -> int:

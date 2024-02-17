@@ -18,26 +18,6 @@ class StatSnapshot:
     timed_out: int
 
 
-class Stats:
-    def __init__(self, t_start: float) -> None:
-        self.history: list[StatSnapshot] = [StatSnapshot(t_start, 0, 0, 0, 0)]
-        self.all_requests: list[Request] = []
-
-    def snapshot(self, t: float, backend: "Backend") -> None:
-        self.history.append(
-            StatSnapshot(
-                t,
-                len(backend.queue),
-                len(backend.processing),
-                len(backend.completed),
-                len(backend.worker_timed_out),
-            )
-        )
-
-    def record_request(self, t: float, r: Request) -> None:
-        self.all_requests.append(r)
-
-
 @dataclass(frozen=True)
 class Event:
     t: float
@@ -50,28 +30,42 @@ class Event:
         return self.t < other.t
 
 
-class Backend:
-    def __init__(self, stats: Stats, parallelism: int, worker_timeout: float) -> None:
+class Database:
+    backend: Backend
+
+    def __init__(self, connections: int, connection_timeout: float | None) -> None:
         self.queue: list[Request] = []
         self.processing: set[Request] = set()
         self.completed: set[Request] = set()
         self.worker_timed_out: set[Request] = set()
 
-        self.stats = stats
-        self.parallelism = parallelism
-        self.worker_timeout = worker_timeout
+        self.connections = connections
+        self.connection_timeout = connection_timeout
+
+        self.stats: list[StatSnapshot] = []
+
+    def _snapshot(self, t: float) -> None:
+        self.stats.append(
+            StatSnapshot(
+                t,
+                len(self.queue),
+                len(self.processing),
+                len(self.completed),
+                len(self.worker_timed_out),
+            )
+        )
 
     def append_request(self, t: float, r: Request) -> list[Event]:
         self.queue.append(r)
         out = self.try_start_process_request(t)
-        self.stats.snapshot(t, self)
+        self._snapshot(t)
         return out
 
     def try_start_process_request(self, t: float) -> list[Event]:
-        assert len(self.processing) <= self.parallelism
+        assert len(self.processing) <= self.connections
 
         # All cores are full
-        if len(self.processing) >= self.parallelism:
+        if len(self.processing) >= self.connections:
             return []
 
         # No work to do
@@ -80,14 +74,120 @@ class Backend:
 
         r = self.queue.pop()
         self.processing.add(r)
-        self.stats.snapshot(t, self)
+        self._snapshot(t)
+
+        # if self.connection_timeout is not None:
+        #     timeout_events = [
+        #         Event(t + self.connection_timeout, lambda t: self.maybe_timeout(t, r))
+        #     ]
+        # else:
+        #     timeout_events = []
+
+        assert r.database_time is not None
+
         return [
-            Event(t + self.worker_timeout, lambda t: self.maybe_timeout(t, r)),
+            # *timeout_events,
             Event(
-                t + r.processing_time,
+                t + r.database_time,
                 lambda t: self.complete_process(t, r),
             ),
         ]
+
+    # def maybe_timeout(self, t: float, r: Request) -> list[Event]:
+    #     # Already completed
+    #     if r not in self.processing:
+    #         return []
+
+    #     self.processing.remove(r)
+    #     self.worker_timed_out.add(r)
+    #     # r.when_timed_out = t
+    #     self._snapshot(t)
+    #     return [
+    #         *self.try_start_process_request(t),
+    #         Event(t, lambda t: self.backend.database_timeout(t, r)),
+    #     ]
+
+    def complete_process(self, t: float, r: Request) -> list[Event]:
+        # Already timed out or completed
+        if r not in self.processing:
+            return []
+
+        self.processing.remove(r)
+        self.completed.add(r)
+        # r.when_completed = t
+        self._snapshot(t)
+        return [
+            *self.backend.return_from_db(t, r),
+            *self.try_start_process_request(t),
+        ]
+
+
+class Backend:
+    def __init__(
+        self, database: Database, workers: int, worker_timeout: float | None
+    ) -> None:
+        self.database = database
+
+        self.queue: list[Request] = []
+        self.processing: set[Request] = set()
+        self.completed: set[Request] = set()
+        self.worker_timed_out: set[Request] = set()
+
+        self.workers = workers
+        self.worker_timeout = worker_timeout
+
+        self.stats: list[StatSnapshot] = []
+
+    def _snapshot(self, t: float) -> None:
+        self.stats.append(
+            StatSnapshot(
+                t,
+                len(self.queue),
+                len(self.processing),
+                len(self.completed),
+                len(self.worker_timed_out),
+            )
+        )
+
+    def append_request(self, t: float, r: Request) -> list[Event]:
+        self.queue.append(r)
+        out = self.try_start_process_request(t)
+        self._snapshot(t)
+        return out
+
+    def try_start_process_request(self, t: float) -> list[Event]:
+        assert len(self.processing) <= self.workers
+
+        # All cores are full
+        if len(self.processing) >= self.workers:
+            return []
+
+        # No work to do
+        if len(self.queue) == 0:
+            return []
+
+        r = self.queue.pop()
+        self.processing.add(r)
+        self._snapshot(t)
+
+        if self.worker_timeout is not None:
+            timeout_events = [
+                Event(t + self.worker_timeout, lambda t: self.maybe_timeout(t, r))
+            ]
+        else:
+            timeout_events = []
+
+        if r.database_time is None:
+            processing_events = [
+                Event(
+                    t + r.processing_time,
+                    lambda t: self.complete_process(t, r),
+                ),
+            ]
+        else:
+            processing_events = self.database.append_request(t, r)
+
+        return [*timeout_events, *processing_events]
 
     def maybe_timeout(self, t: float, r: Request) -> list[Event]:
         # Already completed
@@ -97,8 +197,11 @@ class Backend:
         self.processing.remove(r)
         self.worker_timed_out.add(r)
         r.when_timed_out = t
-        self.stats.snapshot(t, self)
+        self._snapshot(t)
         return self.try_start_process_request(t)
+
+    def return_from_db(self, t: float, r: Request) -> list[Event]:
+        return self.complete_process(t, r)
 
     def complete_process(self, t: float, r: Request) -> list[Event]:
         # Already timed out or completed
@@ -108,7 +211,7 @@ class Backend:
         self.processing.remove(r)
         self.completed.add(r)
         r.when_completed = t
-        self.stats.snapshot(t, self)
+        self._snapshot(t)
         return self.try_start_process_request(t)
 
 
@@ -116,35 +219,48 @@ class Client:
     def __init__(
         self,
         backend: Backend,
-        stats: Stats,
         period: Callable[[], float],
         processing_time: Callable[[], float],
+        database_time: Callable[[], float | None],
     ) -> None:
         self.backend = backend
-        self.stats = stats
 
         self.period = period
         self.processing_time = processing_time
+        self.database_time = database_time
+
+        self.all_requests: list[Request] = []
 
     def fire_request(self, t: float) -> list[Event]:
-        r = Request(self.processing_time(), t)
-        self.stats.record_request(t, r)
+        r = Request(self.processing_time(), self.database_time(), t)
+        self.all_requests.append(r)
         ev = self.backend.append_request(t, r)
 
         next_request = t + self.period()
         return [Event(next_request, self.fire_request)] + ev
 
 
+@dataclass(frozen=True)
+class Stats:
+    t_start: float
+    all_requests: list[Request]
+    backend_history: list[StatSnapshot]
+    db_history: list[StatSnapshot]
+
+
 # Run a single simulation.
-def sim_loop(max_t: float) -> Stats:
+def sim_loop(*, max_t: float, db_fraction: float = 0.5, period: float = 0.0) -> Stats:
     t = 0.0
-    stats = Stats(t_start=t)
-    backend = Backend(stats, parallelism=20, worker_timeout=10.0)
+    database = Database(connections=4, connection_timeout=None)
+    backend = Backend(database, workers=20, worker_timeout=10.0)
+    database.backend = backend  # Yuck
     client = Client(
         backend,
-        stats,
-        period=lambda: max(0.0, random.lognormvariate(0, 1.0)),
+        period=lambda: max(0.0, random.lognormvariate(period, 1.0)),
         processing_time=lambda: max(0.0, random.lognormvariate(1, 1.0)),
+        database_time=lambda: random.choice(
+            [0.0, max(0.0, random.lognormvariate(1, 1.0))]
+        ),
     )
 
     q: list[Event] = [Event(0, client.fire_request)]
@@ -161,4 +277,9 @@ def sim_loop(max_t: float) -> Stats:
         for new_event in new_events:
             heapq.heappush(q, new_event)
 
-    return stats
+    return Stats(
+        t_start=t,
+        all_requests=client.all_requests,
+        backend_history=backend.stats,
+        db_history=database.stats,
+    )

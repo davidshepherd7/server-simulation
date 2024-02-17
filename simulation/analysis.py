@@ -73,13 +73,13 @@ def plot_rates(stats: Stats) -> Any:
 def plot_queue_sizes(stats: Stats) -> Any:
     fig, ax = plt.subplots()
     ax.plot(
-        [s.t for s in stats.history],
-        [s.queued for s in stats.history],
+        [s.t for s in stats.backend_history],
+        [s.queued for s in stats.backend_history],
         label="Queue size",
     )
     ax.plot(
-        [s.t for s in stats.history],
-        [s.processing for s in stats.history],
+        [s.t for s in stats.backend_history],
+        [s.processing for s in stats.backend_history],
         label="Processing count",
     )
     fig.suptitle("Queue sizes")
