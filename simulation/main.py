@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 import matplotlib.pyplot as plt
-from typing import List
+from typing import Any
 
 from . import analysis
 from . import sim
@@ -13,12 +13,30 @@ def max_backend_queue(s: sim.Stats) -> int:
 
 
 def experiment() -> None:
-    # stats: list[tuple[float, float, sim.Stats]] = []
-    for db_fraction in [0, 0.5]:
-        for period in [0.0, 0.1, 0.2, 0.3, 0.4]:
-            s = sim.sim_loop(max_t=1000, db_fraction=db_fraction, period=period)
-            # stats.append((db_fraction, period, s))
-            f2 = analysis.plot_queue_sizes(s)
+    i = 0
+    stats: list[tuple[float, float, sim.Stats]] = []
+
+    db_fractions = [0, 0.5]
+    rpses = [1, 5, 10]
+
+    results: Any = {}
+    for db_fraction in db_fractions:
+        results[db_fraction] = {}
+        for rps in rpses:
+            s = sim.sim_loop(
+                max_t=1000,
+                db_fraction=db_fraction,
+                requests_per_second=rps,
+            )
+            results[db_fraction][rps] = s
+
+    fig, ax = plt.subplots(len(db_fractions), len(rpses))
+    for i, db_fraction in enumerate(db_fractions):
+        for j, rps in enumerate(rpses):
+            analysis.plot_queue_sizes(results[db_fraction][rps], ax[i][j])
+            ax[i][j].set_title(f"db_fraction = {db_fraction}, rps = {rps}")
+
+    fig.legend()
 
 
 def main(argv: list[str]) -> int:

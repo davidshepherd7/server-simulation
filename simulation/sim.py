@@ -249,18 +249,28 @@ class Stats:
 
 
 # Run a single simulation.
-def sim_loop(*, max_t: float, db_fraction: float = 0.5, period: float = 0.0) -> Stats:
+def sim_loop(
+    *,
+    max_t: float,
+    db_fraction: float = 0.5,
+    requests_per_second: float = 5,
+) -> Stats:
     t = 0.0
+    cpu_fraction = 1 - db_fraction
+    assert 0.0 <= cpu_fraction <= 1.0
+
     database = Database(connections=4, connection_timeout=None)
     backend = Backend(database, workers=20, worker_timeout=10.0)
     database.backend = backend  # Yuck
     client = Client(
         backend,
-        period=lambda: max(0.0, random.lognormvariate(period, 1.0)),
-        processing_time=lambda: max(0.0, random.lognormvariate(1, 1.0)),
-        database_time=lambda: random.choice(
-            [0.0, max(0.0, random.lognormvariate(1, 1.0))]
-        ),
+        period=lambda: 1 / requests_per_second,
+        processing_time=lambda: max(0.0, random.lognormvariate(1, 1.0)) * cpu_fraction,
+        database_time=lambda: random.choices(
+            [None, max(0.0, random.lognormvariate(1, 1.0)) * db_fraction],
+            weights=[cpu_fraction, db_fraction],
+            k=1,
+        )[0],
     )
 
     q: list[Event] = [Event(0, client.fire_request)]
